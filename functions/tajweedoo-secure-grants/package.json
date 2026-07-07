@@ -1,0 +1,10 @@
+{
+  "name": "tajweedoo-secure-grants",
+  "version": "1.0.0",
+  "description": "يقفل صلاحيات المستندات الحساسة في تجويدو (طلاب، تسجيلات تلاوة، محاولات اختبار) بدل الاعتماد على Role.users()",
+  "main": "src/main.js",
+  "type": "module",
+  "dependencies": {
+    "node-appwrite": "^14.0.0"
+  }
+}
