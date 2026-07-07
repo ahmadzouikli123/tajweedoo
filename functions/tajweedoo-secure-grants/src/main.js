@@ -95,8 +95,11 @@ export default async ({ req, res, log, error }) => {
 
       await databases.updateDocument(DB_ID, COL.recitationReviews, documentId, undefined, [
         Permission.read(Role.user(callerId)),
+        Permission.update(Role.user(callerId)),
+        Permission.delete(Role.user(callerId)), // يسمح للطالب بحذف تسجيله
         Permission.read(Role.user(classroom.teacherId)),
         Permission.update(Role.user(classroom.teacherId)), // يحتاجها المعلم لإضافة ملاحظاته لاحقًا
+        Permission.delete(Role.user(classroom.teacherId)), // يسمح للمعلم بحذف التسجيل
       ]);
 
       // نقفل أيضًا صلاحيات ملف الصوت نفسه بمساحة التخزين (مو فقط مستند المراجعة)
@@ -106,6 +109,7 @@ export default async ({ req, res, log, error }) => {
           Permission.update(Role.user(callerId)),
           Permission.delete(Role.user(callerId)),
           Permission.read(Role.user(classroom.teacherId)),
+          Permission.delete(Role.user(classroom.teacherId)), // يسمح للمعلم بحذف ملف التسجيل
         ]);
       }
 
