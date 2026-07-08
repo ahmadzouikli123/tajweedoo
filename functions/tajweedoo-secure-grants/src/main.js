@@ -19,7 +19,7 @@
 // الترويسة التلقائية.
 // ============================================================================
 
-import { Client, Databases, Storage, Permission, Role } from 'node-appwrite';
+import { Client, Databases, Storage, Query, Permission, Role } from 'node-appwrite';
 
 export default async ({ req, res, log, error }) => {
   const client = new Client()
@@ -76,6 +76,12 @@ export default async ({ req, res, log, error }) => {
         Permission.read(Role.user(student.userId)),
         Permission.update(Role.user(student.userId)),
       ]);
+
+      // يمنح الطالب صلاحية قراءة فصله (اسمه ورابط الاجتماع) دون فتحها لكل المستخدمين،
+      // مع الحفاظ على أي صلاحيات موجودة مسبقًا (مثل صلاحيات طلاب آخرين بنفس الفصل)
+      const existingClassroomPerms = new Set(classroom.$permissions || []);
+      existingClassroomPerms.add(Permission.read(Role.user(student.userId)));
+      await databases.updateDocument(DB_ID, COL.classrooms, classroom.$id, undefined, Array.from(existingClassroomPerms));
 
       return res.json({ ok: true });
     }
@@ -136,6 +142,37 @@ export default async ({ req, res, log, error }) => {
       ]);
 
       return res.json({ ok: true });
+    }
+
+    // ------------------------------------------------------------------
+    // 4) يزامن صلاحية قراءة الفصل لكل طلابه الحاليين — يُستدعى مثلاً بعد
+    //    حفظ المعلم لرابط اجتماع Teams، حتى يقدر كل طالب بالفصل يشوفه
+    //    (بمن فيهم الطلاب اللي انسجلوا قبل تفعيل هذا الإجراء)
+    //    الشرط: المتصل يجب أن يكون فعلاً معلم هذا الفصل
+    // ------------------------------------------------------------------
+    if (action === 'syncClassroomAccess') {
+      const classroom = await databases.getDocument(DB_ID, COL.classrooms, documentId);
+
+      if (classroom.teacherId !== callerId) {
+        return res.json({ ok: false, error: 'المتصل ليس معلم هذا الفصل' }, 403);
+      }
+
+      const students = await databases.listDocuments(DB_ID, COL.students, [
+        Query.equal('classroomId', documentId),
+        Query.limit(500),
+      ]);
+
+      const perms = new Set(classroom.$permissions || []);
+      perms.add(Permission.read(Role.user(callerId)));
+      perms.add(Permission.update(Role.user(callerId)));
+      perms.add(Permission.delete(Role.user(callerId)));
+      for (const s of students.documents) {
+        if (s.userId) perms.add(Permission.read(Role.user(s.userId)));
+      }
+
+      await databases.updateDocument(DB_ID, COL.classrooms, documentId, undefined, Array.from(perms));
+
+      return res.json({ ok: true, studentsSynced: students.documents.length });
     }
 
     return res.json({ ok: false, error: 'action غير معروف' }, 400);
