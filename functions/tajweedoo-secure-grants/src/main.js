@@ -19,7 +19,7 @@
 // الترويسة التلقائية.
 // ============================================================================
 
-import { Client, Databases, Storage, Query, Permission, Role } from 'node-appwrite';
+import { Client, Databases, Storage, Users, Query, Permission, Role } from 'node-appwrite';
 
 export default async ({ req, res, log, error }) => {
   const client = new Client()
@@ -29,6 +29,7 @@ export default async ({ req, res, log, error }) => {
 
   const databases = new Databases(client);
   const storage = new Storage(client);
+  const users = new Users(client);
   const DB_ID = process.env.APPWRITE_DATABASE_ID;
   const RECITATIONS_BUCKET_ID = process.env.APPWRITE_RECITATIONS_BUCKET_ID;
 
@@ -54,7 +55,7 @@ export default async ({ req, res, log, error }) => {
     return res.json({ ok: false, error: 'جسم الطلب غير صالح' }, 400);
   }
 
-  const { action, documentId } = body || {};
+  const { action, documentId, newUsername, newPassword } = body || {};
 
   try {
     // ------------------------------------------------------------------
@@ -173,6 +174,38 @@ export default async ({ req, res, log, error }) => {
       await databases.updateDocument(DB_ID, COL.classrooms, documentId, undefined, Array.from(perms));
 
       return res.json({ ok: true, studentsSynced: students.documents.length });
+    }
+
+    // ------------------------------------------------------------------
+    // 5) تعديل اسم مستخدم الطالب و/أو كلمة مروره — يحتاج صلاحيات خادم لأن
+    //    تغيير بريد/كلمة مرور حساب مستخدم آخر غير ممكن من جلسة عميل عادية.
+    //    الشرط: المتصل يجب أن يكون فعلاً معلم فصل هذا الطالب.
+    // ------------------------------------------------------------------
+    if (action === 'updateStudentCredentials') {
+      const student = await databases.getDocument(DB_ID, COL.students, documentId);
+      const classroom = await databases.getDocument(DB_ID, COL.classrooms, student.classroomId);
+
+      if (classroom.teacherId !== callerId) {
+        return res.json({ ok: false, error: 'المتصل ليس معلم هذا الطالب' }, 403);
+      }
+
+      try {
+        if (newUsername) {
+          const newEmail = `${newUsername}@tajweedoo.local`;
+          await users.updateEmail(student.userId, newEmail);
+          await databases.updateDocument(DB_ID, COL.students, documentId, { username: newUsername });
+        }
+        if (newPassword) {
+          await users.updatePassword(student.userId, newPassword);
+        }
+      } catch (e) {
+        if (e.type === 'user_email_already_exists' || e.code === 409) {
+          return res.json({ ok: false, error: 'اسم المستخدم هذا مُستخدم من قبل شخص آخر، جرّب اسمًا مختلفًا' }, 409);
+        }
+        throw e;
+      }
+
+      return res.json({ ok: true });
     }
 
     return res.json({ ok: false, error: 'action غير معروف' }, 400);
