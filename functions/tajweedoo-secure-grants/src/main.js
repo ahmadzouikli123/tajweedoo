@@ -38,6 +38,7 @@ export default async ({ req, res, log, error }) => {
     classrooms: 'classrooms',
     students: 'students',
     quizzes: 'quizzes',
+    questions: 'questions',
     quizAttempts: 'quiz_attempts',
     recitationReviews: 'recitation_reviews',
   };
@@ -206,6 +207,44 @@ export default async ({ req, res, log, error }) => {
       }
 
       return res.json({ ok: true });
+    }
+
+    // ------------------------------------------------------------------
+    // 6) يقفل صلاحيات اختبار كامل (المستند نفسه + كل أسئلته دفعة وحدة):
+    //    يُستدعى بعد إنشاء الاختبار، وبعد إضافة/تعديل أي سؤال فيه — يمنح
+    //    القراءة فقط لمعلم الاختبار + طلاب فصله الحاليين، بدل فتحها لأي
+    //    مستخدم مسجَّل دخول (Role.users()). الشرط: المتصل معلم هذا الاختبار.
+    // ------------------------------------------------------------------
+    if (action === 'syncQuizAccess') {
+      const quiz = await databases.getDocument(DB_ID, COL.quizzes, documentId);
+
+      if (quiz.teacherId !== callerId) {
+        return res.json({ ok: false, error: 'المتصل ليس معلم هذا الاختبار' }, 403);
+      }
+
+      const students = await databases.listDocuments(DB_ID, COL.students, [
+        Query.equal('classroomId', quiz.classroomId),
+        Query.limit(500),
+      ]);
+
+      const perms = [
+        Permission.read(Role.user(callerId)),
+        Permission.update(Role.user(callerId)),
+        Permission.delete(Role.user(callerId)),
+        ...students.documents.filter(s => s.userId).map(s => Permission.read(Role.user(s.userId))),
+      ];
+
+      await databases.updateDocument(DB_ID, COL.quizzes, documentId, undefined, perms);
+
+      const questions = await databases.listDocuments(DB_ID, COL.questions, [
+        Query.equal('quizId', documentId),
+        Query.limit(500),
+      ]);
+      for (const q of questions.documents) {
+        await databases.updateDocument(DB_ID, COL.questions, q.$id, undefined, perms);
+      }
+
+      return res.json({ ok: true, questionsSynced: questions.documents.length });
     }
 
     return res.json({ ok: false, error: 'action غير معروف' }, 400);
