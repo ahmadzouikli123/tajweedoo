@@ -1,39 +1,34 @@
 // ============================================================================
-// تجويدو — دالة أمان (Appwrite Function)
+// تجويدو — دالة أمان (Appwrite Function) — مشروع الإنتاج
 // ============================================================================
-// الغرض: بعض المستندات (الطالب، تسجيل التلاوة، محاولة الاختبار) تُنشأ من
+// الغرض: بعض الصفوف (الطالب، تسجيل التلاوة، محاولة الاختبار) تُنشأ من
 // المتصفح بصلاحية Permission.read/update(Role.users()) لأن جلسة العميل
 // (طالب أو معلم) لا تقدر تمنح صلاحية لمستخدم آخر بعينه. هذه الدالة تعمل
 // بمفتاح API سري (صلاحيات خادم كاملة) فتقدر تمنح الصلاحية للشخص الصحيح
-// بالضبط، ثم *تزيل* Role.users() نهائيًا من نفس المستند.
+// بالضبط، ثم *تزيل* Role.users() نهائيًا من نفس الصف.
 //
-// كل استدعاء يُتحقق فيه من هوية المستخدم المتصل (مُمرَّرة تلقائيًا من
-// Appwrite بالترويسة x-appwrite-user-id عند التنفيذ بجلسة مستخدم مسجَّل) ومن
-// أن العلاقة منطقية فعلاً (مثلاً: المتصل هو فعلاً معلم هذا الفصل بالذات)
-// قبل تنفيذ أي تعديل — هذا يمنع أي مستخدم من استغلال الدالة لسرقة صلاحية
-// وصول لبيانات لا تخصه.
-//
-// ⚠️ ملاحظة: أسماء ترويسات هوية المستخدم (x-appwrite-user-id) قد تختلف
-// حسب إصدار Appwrite — تحقق من توثيق Appwrite الحالي لـ "Functions" قبل
-// النشر النهائي، فقد يتطلب إصدارك تمرير JWT من العميل بدل الاعتماد على
-// الترويسة التلقائية.
+// ⚠️ يستخدم TablesDB API الحالي (getRow/updateRow/listRows) بدل Databases
+// API القديم المتوقف (getDocument/updateDocument/listDocuments) — نفس
+// التصحيح المطبّق على نسخة مشروع التجربة، بالإضافة لثلاث إجراءات كانت
+// موجودة بالإنتاج فقط: syncClassroomAccess, updateStudentCredentials,
+// syncQuizAccess.
 // ============================================================================
 
-import { Client, Databases, Storage, Users, Query, Permission, Role } from 'node-appwrite';
+import { Client, TablesDB, Storage, Users, Query, Permission, Role } from 'node-appwrite';
 
 export default async ({ req, res, log, error }) => {
   const client = new Client()
     .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT || process.env.APPWRITE_ENDPOINT)
     .setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID || process.env.APPWRITE_PROJECT_ID)
-    .setKey(process.env.APPWRITE_API_KEY); // مفتاح API سري — يُضبط كمتغيّر بيئة سرّي بلوحة الدالة، لا يوضع بالكود أبدًا
+    .setKey(process.env.APPWRITE_API_KEY);
 
-  const databases = new Databases(client);
+  const tablesDB = new TablesDB(client);
   const storage = new Storage(client);
   const users = new Users(client);
   const DB_ID = process.env.APPWRITE_DATABASE_ID;
   const RECITATIONS_BUCKET_ID = process.env.APPWRITE_RECITATIONS_BUCKET_ID;
 
-  const COL = {
+  const TBL = {
     teachers: 'teachers',
     classrooms: 'classrooms',
     students: 'students',
@@ -43,7 +38,6 @@ export default async ({ req, res, log, error }) => {
     recitationReviews: 'recitation_reviews',
   };
 
-  // هوية المستخدم المتصل — تُمرَّر تلقائيًا من Appwrite عند التنفيذ بجلسة مستخدم حقيقية
   const callerId = req.headers['x-appwrite-user-id'];
   if (!callerId) {
     return res.json({ ok: false, error: 'غير مصرَّح — لا توجد جلسة مستخدم صالحة' }, 401);
@@ -60,88 +54,102 @@ export default async ({ req, res, log, error }) => {
 
   try {
     // ------------------------------------------------------------------
-    // 1) قفل مستند الطالب: يُستدعى فورًا بعد teacherRegisterStudent
+    // 1) قفل صف الطالب: يُستدعى فورًا بعد teacherRegisterStudent
     //    الشرط: المتصل يجب أن يكون فعلاً معلم الفصل الذي يتبعه هذا الطالب
     // ------------------------------------------------------------------
     if (action === 'lockStudentDoc') {
-      const student = await databases.getDocument(DB_ID, COL.students, documentId);
-      const classroom = await databases.getDocument(DB_ID, COL.classrooms, student.classroomId);
+      const student = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.students, rowId: documentId });
+      const classroom = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.classrooms, rowId: student.classroomId });
 
       if (classroom.teacherId !== callerId) {
         return res.json({ ok: false, error: 'المتصل ليس معلم هذا الفصل' }, 403);
       }
 
-      await databases.updateDocument(DB_ID, COL.students, documentId, undefined, [
-        Permission.read(Role.user(callerId)),
-        Permission.update(Role.user(callerId)),
-        Permission.delete(Role.user(callerId)),
-        Permission.read(Role.user(student.userId)),
-        Permission.update(Role.user(student.userId)),
-      ]);
+      await tablesDB.updateRow({
+        databaseId: DB_ID, tableId: TBL.students, rowId: documentId, data: {},
+        permissions: [
+          Permission.read(Role.user(callerId)),
+          Permission.update(Role.user(callerId)),
+          Permission.delete(Role.user(callerId)),
+          Permission.read(Role.user(student.userId)),
+          Permission.update(Role.user(student.userId)),
+        ],
+      });
 
       // يمنح الطالب صلاحية قراءة فصله (اسمه ورابط الاجتماع) دون فتحها لكل المستخدمين،
       // مع الحفاظ على أي صلاحيات موجودة مسبقًا (مثل صلاحيات طلاب آخرين بنفس الفصل)
       const existingClassroomPerms = new Set(classroom.$permissions || []);
       existingClassroomPerms.add(Permission.read(Role.user(student.userId)));
-      await databases.updateDocument(DB_ID, COL.classrooms, classroom.$id, undefined, Array.from(existingClassroomPerms));
+      await tablesDB.updateRow({
+        databaseId: DB_ID, tableId: TBL.classrooms, rowId: classroom.$id, data: {},
+        permissions: Array.from(existingClassroomPerms),
+      });
 
       return res.json({ ok: true });
     }
 
     // ------------------------------------------------------------------
-    // 2) قفل مستند مراجعة التلاوة: يُستدعى فورًا بعد uploadRecitation
+    // 2) قفل صف مراجعة التلاوة: يُستدعى فورًا بعد uploadRecitation
     //    الشرط: المتصل يجب أن يكون فعلاً صاحب التسجيل (الطالب)
     // ------------------------------------------------------------------
     if (action === 'lockRecitationDoc') {
-      const review = await databases.getDocument(DB_ID, COL.recitationReviews, documentId);
+      const review = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.recitationReviews, rowId: documentId });
 
       if (review.studentId !== callerId) {
         return res.json({ ok: false, error: 'المتصل ليس صاحب هذا التسجيل' }, 403);
       }
 
-      const classroom = await databases.getDocument(DB_ID, COL.classrooms, review.classroomId);
+      const classroom = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.classrooms, rowId: review.classroomId });
 
-      await databases.updateDocument(DB_ID, COL.recitationReviews, documentId, undefined, [
-        Permission.read(Role.user(callerId)),
-        Permission.update(Role.user(callerId)),
-        Permission.delete(Role.user(callerId)), // يسمح للطالب بحذف تسجيله
-        Permission.read(Role.user(classroom.teacherId)),
-        Permission.update(Role.user(classroom.teacherId)), // يحتاجها المعلم لإضافة ملاحظاته لاحقًا
-        Permission.delete(Role.user(classroom.teacherId)), // يسمح للمعلم بحذف التسجيل
-      ]);
-
-      // نقفل أيضًا صلاحيات ملف الصوت نفسه بمساحة التخزين (مو فقط مستند المراجعة)
-      if (RECITATIONS_BUCKET_ID && review.audioFileId) {
-        await storage.updateFile(RECITATIONS_BUCKET_ID, review.audioFileId, undefined, [
+      await tablesDB.updateRow({
+        databaseId: DB_ID, tableId: TBL.recitationReviews, rowId: documentId, data: {},
+        permissions: [
           Permission.read(Role.user(callerId)),
           Permission.update(Role.user(callerId)),
-          Permission.delete(Role.user(callerId)),
+          Permission.delete(Role.user(callerId)), // يسمح للطالب بحذف تسجيله
           Permission.read(Role.user(classroom.teacherId)),
-          Permission.delete(Role.user(classroom.teacherId)), // يسمح للمعلم بحذف ملف التسجيل
-        ]);
+          Permission.update(Role.user(classroom.teacherId)), // يحتاجها المعلم لإضافة ملاحظاته لاحقًا
+          Permission.delete(Role.user(classroom.teacherId)), // يسمح للمعلم بحذف التسجيل
+        ],
+      });
+
+      if (RECITATIONS_BUCKET_ID && review.audioFileId) {
+        await storage.updateFile({
+          bucketId: RECITATIONS_BUCKET_ID, fileId: review.audioFileId,
+          permissions: [
+            Permission.read(Role.user(callerId)),
+            Permission.update(Role.user(callerId)),
+            Permission.delete(Role.user(callerId)),
+            Permission.read(Role.user(classroom.teacherId)),
+            Permission.delete(Role.user(classroom.teacherId)), // يسمح للمعلم بحذف ملف التسجيل
+          ],
+        });
       }
 
       return res.json({ ok: true });
     }
 
     // ------------------------------------------------------------------
-    // 3) قفل مستند محاولة الاختبار: يُستدعى فورًا بعد submitQuizAttempt
+    // 3) قفل صف محاولة الاختبار: يُستدعى فورًا بعد submitQuizAttempt
     //    الشرط: المتصل يجب أن يكون فعلاً صاحب المحاولة (الطالب)
     // ------------------------------------------------------------------
     if (action === 'lockQuizAttemptDoc') {
-      const attempt = await databases.getDocument(DB_ID, COL.quizAttempts, documentId);
+      const attempt = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.quizAttempts, rowId: documentId });
 
       if (attempt.studentId !== callerId) {
         return res.json({ ok: false, error: 'المتصل ليس صاحب هذه المحاولة' }, 403);
       }
 
-      const quiz = await databases.getDocument(DB_ID, COL.quizzes, attempt.quizId);
+      const quiz = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.quizzes, rowId: attempt.quizId });
 
-      await databases.updateDocument(DB_ID, COL.quizAttempts, documentId, undefined, [
-        Permission.read(Role.user(callerId)),
-        Permission.update(Role.user(callerId)),
-        Permission.read(Role.user(quiz.teacherId)),
-      ]);
+      await tablesDB.updateRow({
+        databaseId: DB_ID, tableId: TBL.quizAttempts, rowId: documentId, data: {},
+        permissions: [
+          Permission.read(Role.user(callerId)),
+          Permission.update(Role.user(callerId)),
+          Permission.read(Role.user(quiz.teacherId)),
+        ],
+      });
 
       return res.json({ ok: true });
     }
@@ -153,28 +161,31 @@ export default async ({ req, res, log, error }) => {
     //    الشرط: المتصل يجب أن يكون فعلاً معلم هذا الفصل
     // ------------------------------------------------------------------
     if (action === 'syncClassroomAccess') {
-      const classroom = await databases.getDocument(DB_ID, COL.classrooms, documentId);
+      const classroom = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.classrooms, rowId: documentId });
 
       if (classroom.teacherId !== callerId) {
         return res.json({ ok: false, error: 'المتصل ليس معلم هذا الفصل' }, 403);
       }
 
-      const students = await databases.listDocuments(DB_ID, COL.students, [
-        Query.equal('classroomId', documentId),
-        Query.limit(500),
-      ]);
+      const studentsResult = await tablesDB.listRows({
+        databaseId: DB_ID, tableId: TBL.students,
+        queries: [Query.equal('classroomId', documentId), Query.limit(500)],
+      });
 
       const perms = new Set(classroom.$permissions || []);
       perms.add(Permission.read(Role.user(callerId)));
       perms.add(Permission.update(Role.user(callerId)));
       perms.add(Permission.delete(Role.user(callerId)));
-      for (const s of students.documents) {
+      for (const s of studentsResult.rows) {
         if (s.userId) perms.add(Permission.read(Role.user(s.userId)));
       }
 
-      await databases.updateDocument(DB_ID, COL.classrooms, documentId, undefined, Array.from(perms));
+      await tablesDB.updateRow({
+        databaseId: DB_ID, tableId: TBL.classrooms, rowId: documentId, data: {},
+        permissions: Array.from(perms),
+      });
 
-      return res.json({ ok: true, studentsSynced: students.documents.length });
+      return res.json({ ok: true, studentsSynced: studentsResult.rows.length });
     }
 
     // ------------------------------------------------------------------
@@ -183,8 +194,8 @@ export default async ({ req, res, log, error }) => {
     //    الشرط: المتصل يجب أن يكون فعلاً معلم فصل هذا الطالب.
     // ------------------------------------------------------------------
     if (action === 'updateStudentCredentials') {
-      const student = await databases.getDocument(DB_ID, COL.students, documentId);
-      const classroom = await databases.getDocument(DB_ID, COL.classrooms, student.classroomId);
+      const student = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.students, rowId: documentId });
+      const classroom = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.classrooms, rowId: student.classroomId });
 
       if (classroom.teacherId !== callerId) {
         return res.json({ ok: false, error: 'المتصل ليس معلم هذا الطالب' }, 403);
@@ -194,7 +205,10 @@ export default async ({ req, res, log, error }) => {
         if (newUsername) {
           const newEmail = `${newUsername}@tajweedoo.local`;
           await users.updateEmail(student.userId, newEmail);
-          await databases.updateDocument(DB_ID, COL.students, documentId, { username: newUsername });
+          await tablesDB.updateRow({
+            databaseId: DB_ID, tableId: TBL.students, rowId: documentId,
+            data: { username: newUsername },
+          });
         }
         if (newPassword) {
           await users.updatePassword(student.userId, newPassword);
@@ -210,41 +224,45 @@ export default async ({ req, res, log, error }) => {
     }
 
     // ------------------------------------------------------------------
-    // 6) يقفل صلاحيات اختبار كامل (المستند نفسه + كل أسئلته دفعة وحدة):
+    // 6) يقفل صلاحيات اختبار كامل (الصف نفسه + كل أسئلته دفعة وحدة):
     //    يُستدعى بعد إنشاء الاختبار، وبعد إضافة/تعديل أي سؤال فيه — يمنح
     //    القراءة فقط لمعلم الاختبار + طلاب فصله الحاليين، بدل فتحها لأي
     //    مستخدم مسجَّل دخول (Role.users()). الشرط: المتصل معلم هذا الاختبار.
     // ------------------------------------------------------------------
     if (action === 'syncQuizAccess') {
-      const quiz = await databases.getDocument(DB_ID, COL.quizzes, documentId);
+      const quiz = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.quizzes, rowId: documentId });
 
       if (quiz.teacherId !== callerId) {
         return res.json({ ok: false, error: 'المتصل ليس معلم هذا الاختبار' }, 403);
       }
 
-      const students = await databases.listDocuments(DB_ID, COL.students, [
-        Query.equal('classroomId', quiz.classroomId),
-        Query.limit(500),
-      ]);
+      const studentsResult = await tablesDB.listRows({
+        databaseId: DB_ID, tableId: TBL.students,
+        queries: [Query.equal('classroomId', quiz.classroomId), Query.limit(500)],
+      });
 
       const perms = [
         Permission.read(Role.user(callerId)),
         Permission.update(Role.user(callerId)),
         Permission.delete(Role.user(callerId)),
-        ...students.documents.filter(s => s.userId).map(s => Permission.read(Role.user(s.userId))),
+        ...studentsResult.rows.filter(s => s.userId).map(s => Permission.read(Role.user(s.userId))),
       ];
 
-      await databases.updateDocument(DB_ID, COL.quizzes, documentId, undefined, perms);
+      await tablesDB.updateRow({
+        databaseId: DB_ID, tableId: TBL.quizzes, rowId: documentId, data: {}, permissions: perms,
+      });
 
-      const questions = await databases.listDocuments(DB_ID, COL.questions, [
-        Query.equal('quizId', documentId),
-        Query.limit(500),
-      ]);
-      for (const q of questions.documents) {
-        await databases.updateDocument(DB_ID, COL.questions, q.$id, undefined, perms);
+      const questionsResult = await tablesDB.listRows({
+        databaseId: DB_ID, tableId: TBL.questions,
+        queries: [Query.equal('quizId', documentId), Query.limit(500)],
+      });
+      for (const q of questionsResult.rows) {
+        await tablesDB.updateRow({
+          databaseId: DB_ID, tableId: TBL.questions, rowId: q.$id, data: {}, permissions: perms,
+        });
       }
 
-      return res.json({ ok: true, questionsSynced: questions.documents.length });
+      return res.json({ ok: true, questionsSynced: questionsResult.rows.length });
     }
 
     return res.json({ ok: false, error: 'action غير معروف' }, 400);
