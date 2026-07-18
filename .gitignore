@@ -1,1 +1,7 @@
 .vercel
+
+*.ps1
+*.bak
+*.bak-*
+node_modules/
+dist/
