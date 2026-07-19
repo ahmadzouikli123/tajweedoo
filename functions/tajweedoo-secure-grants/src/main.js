@@ -9,9 +9,12 @@
 //
 // ⚠️ يستخدم TablesDB API الحالي (getRow/updateRow/listRows) بدل Databases
 // API القديم المتوقف (getDocument/updateDocument/listDocuments) — نفس
-// التصحيح المطبّق على نسخة مشروع التجربة، بالإضافة لثلاث إجراءات كانت
-// موجودة بالإنتاج فقط: syncClassroomAccess, updateStudentCredentials,
-// syncQuizAccess.
+// التصحيح المطبّق على نسخة مشروع التجربة، بالإضافة لإجراءين كانا
+// موجودين بالإنتاج فقط: updateStudentCredentials, syncQuizAccess.
+//
+// ملاحظة: إجراء syncClassroomAccess حُذف (2026-07-18) بعد حذف ميزة
+// اجتماع الفيديو (Teams) من واجهة index.html، لأنه كان الاستدعاء
+// الوحيد له من العميل.
 // ============================================================================
 
 import { Client, TablesDB, Storage, Users, Query, Permission, Role } from 'node-appwrite';
@@ -155,41 +158,7 @@ export default async ({ req, res, log, error }) => {
     }
 
     // ------------------------------------------------------------------
-    // 4) يزامن صلاحية قراءة الفصل لكل طلابه الحاليين — يُستدعى مثلاً بعد
-    //    حفظ المعلم لرابط اجتماع Teams، حتى يقدر كل طالب بالفصل يشوفه
-    //    (بمن فيهم الطلاب اللي انسجلوا قبل تفعيل هذا الإجراء)
-    //    الشرط: المتصل يجب أن يكون فعلاً معلم هذا الفصل
-    // ------------------------------------------------------------------
-    if (action === 'syncClassroomAccess') {
-      const classroom = await tablesDB.getRow({ databaseId: DB_ID, tableId: TBL.classrooms, rowId: documentId });
-
-      if (classroom.teacherId !== callerId) {
-        return res.json({ ok: false, error: 'المتصل ليس معلم هذا الفصل' }, 403);
-      }
-
-      const studentsResult = await tablesDB.listRows({
-        databaseId: DB_ID, tableId: TBL.students,
-        queries: [Query.equal('classroomId', documentId), Query.limit(500)],
-      });
-
-      const perms = new Set(classroom.$permissions || []);
-      perms.add(Permission.read(Role.user(callerId)));
-      perms.add(Permission.update(Role.user(callerId)));
-      perms.add(Permission.delete(Role.user(callerId)));
-      for (const s of studentsResult.rows) {
-        if (s.userId) perms.add(Permission.read(Role.user(s.userId)));
-      }
-
-      await tablesDB.updateRow({
-        databaseId: DB_ID, tableId: TBL.classrooms, rowId: documentId, data: {},
-        permissions: Array.from(perms),
-      });
-
-      return res.json({ ok: true, studentsSynced: studentsResult.rows.length });
-    }
-
-    // ------------------------------------------------------------------
-    // 5) تعديل اسم مستخدم الطالب و/أو كلمة مروره — يحتاج صلاحيات خادم لأن
+    // 4) تعديل اسم مستخدم الطالب و/أو كلمة مروره — يحتاج صلاحيات خادم لأن
     //    تغيير بريد/كلمة مرور حساب مستخدم آخر غير ممكن من جلسة عميل عادية.
     //    الشرط: المتصل يجب أن يكون فعلاً معلم فصل هذا الطالب.
     // ------------------------------------------------------------------
@@ -224,7 +193,7 @@ export default async ({ req, res, log, error }) => {
     }
 
     // ------------------------------------------------------------------
-    // 6) يقفل صلاحيات اختبار كامل (الصف نفسه + كل أسئلته دفعة وحدة):
+    // 5) يقفل صلاحيات اختبار كامل (الصف نفسه + كل أسئلته دفعة وحدة):
     //    يُستدعى بعد إنشاء الاختبار، وبعد إضافة/تعديل أي سؤال فيه — يمنح
     //    القراءة فقط لمعلم الاختبار + طلاب فصله الحاليين، بدل فتحها لأي
     //    مستخدم مسجَّل دخول (Role.users()). الشرط: المتصل معلم هذا الاختبار.
