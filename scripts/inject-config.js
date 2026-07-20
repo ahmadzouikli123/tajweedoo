@@ -8,6 +8,9 @@
  *   - "production"          → عند تشغيل: vercel deploy --prod
  *   - "preview" أو غيرها    → عند تشغيل: vercel deploy   (بدون --prod)
  *
+ * يعالج كل ملف بقائمة SOURCE_FILES أدناه (حاليًا: index.html و admin.html) —
+ * أي ملف HTML جديد يحتاج نفس القيم يُضاف لهذي القائمة بس، بدون تكرار الكود.
+ *
  * للتجربة المحلية بدون Vercel:
  *   VERCEL_ENV=preview node scripts/inject-config.js
  */
@@ -51,14 +54,7 @@ if (missing.length > 0) {
 }
 
 const repoRoot = path.resolve(__dirname, '..');
-const sourcePath = path.join(repoRoot, 'index.html');
 const outDir = path.join(repoRoot, 'dist');
-const outPath = path.join(outDir, 'index.html');
-
-if (!fs.existsSync(sourcePath)) {
-    console.error(`ملف المصدر غير موجود: ${sourcePath}`);
-    process.exit(1);
-}
 
 const placeholderMap = {
     '__APPWRITE_ENDPOINT__': config.endpoint,
@@ -68,23 +64,45 @@ const placeholderMap = {
     '__RECITATIONS_BUCKET_ID__': config.recitationsBucketId,
 };
 
-let html = fs.readFileSync(sourcePath, 'utf8');
-let replacedCount = 0;
-for (const [placeholder, value] of Object.entries(placeholderMap)) {
-    const before = html;
-    html = html.split(placeholder).join(value);
-    if (html !== before) replacedCount++;
-}
-
-if (replacedCount === 0) {
-    console.error(
-        'ما تم إيجاد أي placeholder داخل index.html.\n' +
-        'يبدو إن index.html لسه فيه القيم الثابتة (hardcoded) بدل الـ placeholders.\n' +
-        'راجع "الخطوة 1" في README-deploy.md قبل ما تشغّل هذا السكربت.'
-    );
-    process.exit(1);
-}
+// كل ملف HTML بجذر المشروع يحتاج حقن نفس القيم فيه وقت البناء — أضف أي ملف
+// جديد هنا (زي صفحات لوحات إدارية مستقبلية) بدل تكرار منطق الحقن يدويًا.
+const SOURCE_FILES = ['index.html', 'admin.html'];
 
 fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(outPath, html, 'utf8');
-console.log(`تم بناء dist/index.html لبيئة "${target}" (مشروع Appwrite: ${config.projectId})`);
+
+let anyFileProcessed = false;
+
+for (const fileName of SOURCE_FILES) {
+    const sourcePath = path.join(repoRoot, fileName);
+    if (!fs.existsSync(sourcePath)) {
+        console.log(`تخطي "${fileName}" — الملف غير موجود بجذر المشروع (تجاهل هذا لو الملف اختياري).`);
+        continue;
+    }
+
+    let html = fs.readFileSync(sourcePath, 'utf8');
+    let replacedCount = 0;
+    for (const [placeholder, value] of Object.entries(placeholderMap)) {
+        const before = html;
+        html = html.split(placeholder).join(value);
+        if (html !== before) replacedCount++;
+    }
+
+    if (replacedCount === 0) {
+        console.error(
+            `ما تم إيجاد أي placeholder داخل ${fileName}.\n` +
+            `يبدو إن ${fileName} لسه فيه القيم الثابتة (hardcoded) بدل الـ placeholders.\n` +
+            'راجع "الخطوة 1" في README-deploy.md قبل ما تشغّل هذا السكربت.'
+        );
+        process.exit(1);
+    }
+
+    const outPath = path.join(outDir, fileName);
+    fs.writeFileSync(outPath, html, 'utf8');
+    console.log(`تم بناء dist/${fileName} لبيئة "${target}" (مشروع Appwrite: ${config.projectId})`);
+    anyFileProcessed = true;
+}
+
+if (!anyFileProcessed) {
+    console.error('لم يُعالَج أي ملف من SOURCE_FILES — تأكد من وجود index.html بجذر المشروع على الأقل.');
+    process.exit(1);
+}
