@@ -72,9 +72,45 @@
         </div>
 
         <!-- المحتوى الرئيسي (بعد تأكيد صلاحية الأدمن) -->
-        <div id="admin-dashboard-content" class="hidden">
+        <div id="admin-dashboard-content" class="hidden space-y-4">
 
-            <div class="glass-card rounded-2xl p-6 shadow-xl mb-4">
+            <!-- الإحصائيات -->
+            <div class="glass-card rounded-2xl p-6 shadow-xl">
+                <div class="flex items-center justify-between mb-5">
+                    <h2 class="text-lg font-bold text-taj-dark flex items-center gap-2">
+                        <i class="fas fa-chart-simple text-taj-blue"></i>
+                        نظرة عامة
+                    </h2>
+                    <button onclick="loadStats()" class="text-gray-400 hover:text-taj-green transition" title="تحديث">
+                        <i class="fas fa-rotate"></i>
+                    </button>
+                </div>
+
+                <div id="stats-loading" class="flex items-center justify-center gap-2 text-gray-400 py-8">
+                    <div class="spinner"></div>
+                    <span class="text-sm">جارٍ التحميل...</span>
+                </div>
+
+                <div id="stats-error" class="hidden bg-red-50 text-red-600 text-sm rounded-xl p-3 text-center"></div>
+
+                <div id="stats-content" class="hidden">
+                    <div id="stats-cards" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5"></div>
+
+                    <div class="grid md:grid-cols-2 gap-4">
+                        <div class="bg-gray-50 rounded-xl p-4">
+                            <p class="text-xs font-bold text-gray-500 mb-2">نشاط آخر 7 أيام</p>
+                            <div id="stats-recent-activity" class="space-y-1.5 text-sm text-gray-700"></div>
+                        </div>
+                        <div class="bg-gray-50 rounded-xl p-4">
+                            <p class="text-xs font-bold text-gray-500 mb-2">أعلى الطلاب نجومًا</p>
+                            <div id="stats-top-students" class="space-y-1.5 text-sm text-gray-700"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- معلمون بانتظار الموافقة -->
+            <div class="glass-card rounded-2xl p-6 shadow-xl">
                 <div class="flex items-center justify-between mb-4">
                     <h2 class="text-lg font-bold text-taj-dark flex items-center gap-2">
                         <i class="fas fa-user-clock text-taj-green"></i>
@@ -97,6 +133,25 @@
                 <div id="pending-error" class="hidden bg-red-50 text-red-600 text-sm rounded-xl p-3 text-center"></div>
 
                 <div id="pending-list" class="hidden space-y-3"></div>
+            </div>
+
+            <!-- إعادة تعيين كلمة مرور معلم -->
+            <div class="glass-card rounded-2xl p-6 shadow-xl">
+                <h2 class="text-lg font-bold text-taj-dark flex items-center gap-2 mb-4">
+                    <i class="fas fa-key text-taj-blue"></i>
+                    إعادة تعيين كلمة مرور معلم
+                </h2>
+
+                <div class="flex flex-col md:flex-row gap-3">
+                    <select id="reset-teacher-select" class="flex-1 border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:border-taj-blue">
+                        <option value="">جارٍ تحميل قائمة المعلمين...</option>
+                    </select>
+                    <input id="reset-teacher-password" type="text" placeholder="كلمة المرور الجديدة" class="flex-1 border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:border-taj-blue" dir="ltr">
+                    <button onclick="handleResetTeacherPassword()" class="bg-taj-blue hover:opacity-90 text-white font-bold px-6 py-3 rounded-xl transition whitespace-nowrap">
+                        <i class="fas fa-rotate-right"></i> إعادة التعيين
+                    </button>
+                </div>
+                <p class="text-xs text-gray-400 mt-2">هذا يغيّر كلمة مرور المعلم فقط، دون المساس ببريده الإلكتروني.</p>
             </div>
 
         </div>
@@ -219,6 +274,8 @@
 
             dashboard.classList.remove('hidden');
             renderPendingTeachers(result.teachers || []);
+            loadStats();
+            loadApprovedTeachersForReset();
         }
 
         // ===================== قائمة المعلمين المعلَّقين =====================
@@ -289,6 +346,109 @@
             if (result && result.ok) {
                 showToast('تم رفض الحساب');
                 await loadPendingTeachers();
+            } else {
+                showToast((result && result.error) || 'تعذرت العملية');
+            }
+        }
+
+        // ===================== الإحصائيات =====================
+
+        async function loadStats() {
+            document.getElementById('stats-loading').classList.remove('hidden');
+            document.getElementById('stats-error').classList.add('hidden');
+            document.getElementById('stats-content').classList.add('hidden');
+
+            const result = await callSecurityFunction('getAdminStats');
+
+            document.getElementById('stats-loading').classList.add('hidden');
+
+            if (!result || !result.ok) {
+                const el = document.getElementById('stats-error');
+                el.textContent = (result && result.error) || 'تعذر جلب الإحصائيات';
+                el.classList.remove('hidden');
+                return;
+            }
+
+            const { counts, recentActivity, topStudents } = result;
+
+            const cardsData = [
+                { icon: 'fa-chalkboard-user', color: 'text-taj-green', label: 'معلمون معتمدون', value: counts.approvedTeachers },
+                { icon: 'fa-hourglass-half', color: 'text-yellow-500', label: 'بانتظار الموافقة', value: counts.pendingTeachers },
+                { icon: 'fa-user-graduate', color: 'text-taj-blue', label: 'إجمالي الطلاب', value: counts.totalStudents },
+                { icon: 'fa-chalkboard', color: 'text-purple-500', label: 'الفصول الدراسية', value: counts.totalClassrooms },
+                { icon: 'fa-file-pen', color: 'text-taj-green', label: 'الاختبارات', value: counts.totalQuizzes },
+                { icon: 'fa-clipboard-check', color: 'text-taj-blue', label: 'محاولات الاختبارات', value: counts.totalQuizAttempts },
+                { icon: 'fa-microphone', color: 'text-purple-500', label: 'تسجيلات التلاوة', value: counts.totalRecitations },
+            ];
+            document.getElementById('stats-cards').innerHTML = cardsData.map(c => `
+                <div class="bg-gray-50 rounded-xl p-4 text-center">
+                    <i class="fas ${c.icon} ${c.color} text-xl mb-2"></i>
+                    <p class="text-2xl font-bold text-gray-800">${c.value}</p>
+                    <p class="text-xs text-gray-500 mt-0.5">${c.label}</p>
+                </div>
+            `).join('');
+
+            document.getElementById('stats-recent-activity').innerHTML = `
+                <div class="flex items-center justify-between">
+                    <span>محاولات اختبارات جديدة</span>
+                    <span class="font-bold text-taj-green">${recentActivity.quizAttemptsLast7Days}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span>تسجيلات تلاوة جديدة</span>
+                    <span class="font-bold text-taj-blue">${recentActivity.recitationsLast7Days}</span>
+                </div>
+            `;
+
+            document.getElementById('stats-top-students').innerHTML = topStudents.length === 0
+                ? '<p class="text-gray-400 text-xs">لا يوجد طلاب بعد</p>'
+                : topStudents.map((s, i) => `
+                    <div class="flex items-center justify-between">
+                        <span>${i + 1}. ${escapeHtml(s.displayName || 'بدون اسم')}</span>
+                        <span class="font-bold text-yellow-500">⭐ ${s.totalStars || 0}</span>
+                    </div>
+                `).join('');
+
+            document.getElementById('stats-content').classList.remove('hidden');
+        }
+
+        // ===================== إعادة تعيين كلمة مرور معلم =====================
+
+        async function loadApprovedTeachersForReset() {
+            const select = document.getElementById('reset-teacher-select');
+            const result = await callSecurityFunction('listApprovedTeachers');
+
+            if (!result || !result.ok) {
+                select.innerHTML = '<option value="">تعذر تحميل القائمة</option>';
+                return;
+            }
+
+            if (result.teachers.length === 0) {
+                select.innerHTML = '<option value="">لا يوجد معلمون معتمدون بعد</option>';
+                return;
+            }
+
+            select.innerHTML = '<option value="">اختر معلمًا...</option>' + result.teachers.map(t =>
+                `<option value="${t.id}">${escapeHtml(t.fullName || 'بدون اسم')} — ${escapeHtml(t.schoolName || 'بدون مدرسة')}</option>`
+            ).join('');
+        }
+
+        async function handleResetTeacherPassword() {
+            const teacherId = document.getElementById('reset-teacher-select').value;
+            const newPassword = document.getElementById('reset-teacher-password').value;
+
+            if (!teacherId) {
+                showToast('اختر معلمًا أولًا');
+                return;
+            }
+            if (!newPassword || newPassword.length < 8) {
+                showToast('كلمة المرور يجب أن تكون 8 أحرف على الأقل');
+                return;
+            }
+
+            const result = await callSecurityFunction('adminResetTeacherPassword', { teacherId, newPassword });
+            if (result && result.ok) {
+                showToast('تم تغيير كلمة المرور بنجاح ✅');
+                document.getElementById('reset-teacher-password').value = '';
             } else {
                 showToast((result && result.error) || 'تعذرت العملية');
             }

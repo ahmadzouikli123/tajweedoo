@@ -59,14 +59,23 @@ export default async ({ req, res, log, error }) => {
 
   // يتحقق إن المتصل عضو بفريق "Admins" — يُستخدم قبل أي إجراء إداري حساس
   async function isCallerAdmin() {
-    if (!ADMINS_TEAM_ID) return false; // لو المتغير غير مضبوط بهذا النشر، نرفض بأمان
+    log(`isCallerAdmin: ADMINS_TEAM_ID="${ADMINS_TEAM_ID}", callerId="${callerId}"`);
+    if (!ADMINS_TEAM_ID) {
+      log('isCallerAdmin: رفض — APPWRITE_ADMINS_TEAM_ID غير مضبوط بمتغيرات بيئة الدالة');
+      return false;
+    }
     try {
+      // نجلب كل أعضاء الفريق (بدل فلترة الاستعلام على userId، لضمان التوافق
+      // مع كل نسخ Appwrite) ونتحقق يدويًا — عدد الأعضاء المتوقع صغير جدًا
       const memberships = await teams.listMemberships({
         teamId: ADMINS_TEAM_ID,
-        queries: [Query.equal('userId', callerId)],
+        queries: [Query.limit(100)],
       });
-      return memberships.total > 0;
+      const ids = memberships.memberships.map(m => m.userId);
+      log(`isCallerAdmin: أعضاء الفريق (${ids.length}): ${JSON.stringify(ids)}`);
+      return ids.includes(callerId);
     } catch (e) {
+      log(`isCallerAdmin: استثناء أثناء جلب الأعضاء — ${e.message}`);
       return false;
     }
   }
@@ -313,6 +322,98 @@ export default async ({ req, res, log, error }) => {
       });
 
       return res.json({ ok: true });
+    }
+
+    // ------------------------------------------------------------------
+    // 9) يعرض قائمة المعلمين المعتمدين (لاستخدامها بصفحة الأدمن، مثلًا
+    //    لإعادة تعيين كلمة مرور معلم معيّن). الشرط: المتصل عضو بفريق
+    //    "Admins".
+    // ------------------------------------------------------------------
+    if (action === 'listApprovedTeachers') {
+      if (!(await isCallerAdmin())) {
+        return res.json({ ok: false, error: 'المتصل ليس عضوًا بفريق الإدارة' }, 403);
+      }
+
+      const approvedResult = await tablesDB.listRows({
+        databaseId: DB_ID, tableId: TBL.teachers,
+        queries: [Query.equal('status', 'approved'), Query.limit(500)],
+      });
+
+      return res.json({
+        ok: true,
+        teachers: approvedResult.rows.map(t => ({
+          id: t.$id,
+          fullName: t.fullName,
+          schoolName: t.schoolName,
+        })),
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // 10) يعيد تعيين كلمة مرور معلم (بدون تغيير بريده). الشرط: المتصل
+    //     عضو بفريق "Admins".
+    // ------------------------------------------------------------------
+    if (action === 'adminResetTeacherPassword') {
+      if (!(await isCallerAdmin())) {
+        return res.json({ ok: false, error: 'المتصل ليس عضوًا بفريق الإدارة' }, 403);
+      }
+      if (!teacherId || !newPassword) {
+        return res.json({ ok: false, error: 'teacherId و newPassword مطلوبان' }, 400);
+      }
+
+      await users.updatePassword(teacherId, newPassword);
+
+      return res.json({ ok: true });
+    }
+
+    // ------------------------------------------------------------------
+    // 11) يرجّع إحصائيات عامة (أعداد إجمالية + الأكثر نشاطًا خلال آخر
+    //     7 أيام). الشرط: المتصل عضو بفريق "Admins".
+    // ------------------------------------------------------------------
+    if (action === 'getAdminStats') {
+      if (!(await isCallerAdmin())) {
+        return res.json({ ok: false, error: 'المتصل ليس عضوًا بفريق الإدارة' }, 403);
+      }
+
+      const sevenDaysAgoISO = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const [
+        approvedTeachers, pendingTeachers, allStudents, allClassrooms,
+        allQuizzes, allQuizAttempts, allRecitations,
+        recentQuizAttempts, recentRecitations, topStudents,
+      ] = await Promise.all([
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.teachers, queries: [Query.equal('status', 'approved'), Query.limit(1)] }),
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.teachers, queries: [Query.equal('status', 'pending'), Query.limit(1)] }),
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.students, queries: [Query.limit(1)] }),
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.classrooms, queries: [Query.limit(1)] }),
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.quizzes, queries: [Query.limit(1)] }),
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.quizAttempts, queries: [Query.limit(1)] }),
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.recitationReviews, queries: [Query.limit(1)] }),
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.quizAttempts, queries: [Query.greaterThan('submittedAt', sevenDaysAgoISO), Query.limit(1)] }),
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.recitationReviews, queries: [Query.greaterThan('$createdAt', sevenDaysAgoISO), Query.limit(1)] }),
+        tablesDB.listRows({ databaseId: DB_ID, tableId: TBL.students, queries: [Query.orderDesc('totalStars'), Query.limit(5)] }),
+      ]);
+
+      return res.json({
+        ok: true,
+        counts: {
+          approvedTeachers: approvedTeachers.total,
+          pendingTeachers: pendingTeachers.total,
+          totalStudents: allStudents.total,
+          totalClassrooms: allClassrooms.total,
+          totalQuizzes: allQuizzes.total,
+          totalQuizAttempts: allQuizAttempts.total,
+          totalRecitations: allRecitations.total,
+        },
+        recentActivity: {
+          quizAttemptsLast7Days: recentQuizAttempts.total,
+          recitationsLast7Days: recentRecitations.total,
+        },
+        topStudents: topStudents.rows.map(s => ({
+          displayName: s.displayName,
+          totalStars: s.totalStars,
+        })),
+      });
     }
 
     return res.json({ ok: false, error: 'action غير معروف' }, 400);
