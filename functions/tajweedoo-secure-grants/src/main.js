@@ -17,7 +17,7 @@
 // الوحيد له من العميل.
 // ============================================================================
 
-import { Client, TablesDB, Storage, Users, Query, Permission, Role } from 'node-appwrite';
+import { Client, TablesDB, Storage, Users, Teams, Query, Permission, Role } from 'node-appwrite';
 
 export default async ({ req, res, log, error }) => {
   const client = new Client()
@@ -28,8 +28,10 @@ export default async ({ req, res, log, error }) => {
   const tablesDB = new TablesDB(client);
   const storage = new Storage(client);
   const users = new Users(client);
+  const teams = new Teams(client);
   const DB_ID = process.env.APPWRITE_DATABASE_ID;
   const RECITATIONS_BUCKET_ID = process.env.APPWRITE_RECITATIONS_BUCKET_ID;
+  const ADMINS_TEAM_ID = process.env.APPWRITE_ADMINS_TEAM_ID;
 
   const TBL = {
     teachers: 'teachers',
@@ -53,7 +55,21 @@ export default async ({ req, res, log, error }) => {
     return res.json({ ok: false, error: 'جسم الطلب غير صالح' }, 400);
   }
 
-  const { action, documentId, newUsername, newPassword } = body || {};
+  const { action, documentId, newUsername, newPassword, teacherId } = body || {};
+
+  // يتحقق إن المتصل عضو بفريق "Admins" — يُستخدم قبل أي إجراء إداري حساس
+  async function isCallerAdmin() {
+    if (!ADMINS_TEAM_ID) return false; // لو المتغير غير مضبوط بهذا النشر، نرفض بأمان
+    try {
+      const memberships = await teams.listMemberships({
+        teamId: ADMINS_TEAM_ID,
+        queries: [Query.equal('userId', callerId)],
+      });
+      return memberships.total > 0;
+    } catch (e) {
+      return false;
+    }
+  }
 
   try {
     // ------------------------------------------------------------------
@@ -232,6 +248,71 @@ export default async ({ req, res, log, error }) => {
       }
 
       return res.json({ ok: true, questionsSynced: questionsResult.rows.length });
+    }
+
+    // ------------------------------------------------------------------
+    // 6) يعرض قائمة المعلمين بانتظار موافقة الإدارة. الشرط: المتصل عضو
+    //    بفريق "Admins".
+    // ------------------------------------------------------------------
+    if (action === 'listPendingTeachers') {
+      if (!(await isCallerAdmin())) {
+        return res.json({ ok: false, error: 'المتصل ليس عضوًا بفريق الإدارة' }, 403);
+      }
+
+      const pendingResult = await tablesDB.listRows({
+        databaseId: DB_ID, tableId: TBL.teachers,
+        queries: [Query.equal('status', 'pending'), Query.limit(500)],
+      });
+
+      return res.json({
+        ok: true,
+        teachers: pendingResult.rows.map(t => ({
+          id: t.$id,
+          fullName: t.fullName,
+          schoolName: t.schoolName,
+          createdAt: t.createdAt,
+        })),
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // 7) يوافق على حساب معلم (status -> approved). الشرط: المتصل عضو
+    //    بفريق "Admins".
+    // ------------------------------------------------------------------
+    if (action === 'approveTeacher') {
+      if (!(await isCallerAdmin())) {
+        return res.json({ ok: false, error: 'المتصل ليس عضوًا بفريق الإدارة' }, 403);
+      }
+      if (!teacherId) {
+        return res.json({ ok: false, error: 'teacherId مطلوب' }, 400);
+      }
+
+      await tablesDB.updateRow({
+        databaseId: DB_ID, tableId: TBL.teachers, rowId: teacherId,
+        data: { status: 'approved' },
+      });
+
+      return res.json({ ok: true });
+    }
+
+    // ------------------------------------------------------------------
+    // 8) يرفض حساب معلم (status -> rejected). الشرط: المتصل عضو
+    //    بفريق "Admins".
+    // ------------------------------------------------------------------
+    if (action === 'rejectTeacher') {
+      if (!(await isCallerAdmin())) {
+        return res.json({ ok: false, error: 'المتصل ليس عضوًا بفريق الإدارة' }, 403);
+      }
+      if (!teacherId) {
+        return res.json({ ok: false, error: 'teacherId مطلوب' }, 400);
+      }
+
+      await tablesDB.updateRow({
+        databaseId: DB_ID, tableId: TBL.teachers, rowId: teacherId,
+        data: { status: 'rejected' },
+      });
+
+      return res.json({ ok: true });
     }
 
     return res.json({ ok: false, error: 'action غير معروف' }, 400);
