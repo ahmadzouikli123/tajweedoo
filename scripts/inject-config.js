@@ -27,6 +27,7 @@ const REQUIRED = {
         databaseId: 'APPWRITE_DATABASE_ID_PROD',
         securityFunctionId: 'SECURITY_FUNCTION_ID_PROD',
         recitationsBucketId: 'RECITATIONS_BUCKET_ID_PROD',
+        loginFailureFunctionId: 'LOGIN_FAILURE_FUNCTION_ID_PROD',
     },
     staging: {
         endpoint: 'APPWRITE_ENDPOINT_STAGING',
@@ -34,6 +35,7 @@ const REQUIRED = {
         databaseId: 'APPWRITE_DATABASE_ID_STAGING',
         securityFunctionId: 'SECURITY_FUNCTION_ID_STAGING',
         recitationsBucketId: 'RECITATIONS_BUCKET_ID_STAGING',
+        loginFailureFunctionId: 'LOGIN_FAILURE_FUNCTION_ID_STAGING',
     },
 };
 
@@ -62,6 +64,7 @@ const placeholderMap = {
     '__APPWRITE_DATABASE_ID__': config.databaseId,
     '__SECURITY_FUNCTION_ID__': config.securityFunctionId,
     '__RECITATIONS_BUCKET_ID__': config.recitationsBucketId,
+    '__LOGIN_FAILURE_FUNCTION_ID__': config.loginFailureFunctionId,
 };
 
 // كل ملف HTML بجذر المشروع يحتاج حقن نفس القيم فيه وقت البناء — أضف أي ملف
